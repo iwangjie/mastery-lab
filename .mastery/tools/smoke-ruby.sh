@@ -4,6 +4,27 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT"
 
+LOCK_DIR=".mastery/tmp/smoke.lock"
+mkdir -p .mastery/tmp
+
+acquire_lock() {
+  local waited=0
+  until mkdir "$LOCK_DIR" 2>/dev/null; do
+    if [[ "$waited" -ge 30 ]]; then
+      echo "Timed out waiting for smoke test lock."
+      exit 1
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+}
+
+release_lock() {
+  rmdir "$LOCK_DIR" 2>/dev/null || true
+}
+
+acquire_lock
+
 TMP_DIR="$(mktemp -d)"
 HAD_STATE=0
 HAD_TASK=0
@@ -32,6 +53,7 @@ restore() {
     rm -rf current_task
   fi
   rm -rf "$TMP_DIR"
+  release_lock
 }
 
 trap restore EXIT

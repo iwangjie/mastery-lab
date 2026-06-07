@@ -1,6 +1,11 @@
 {
   "id": "ruby",
   "title": "Ruby 后端工程基础",
+  "aliases": ["ruby", "rails", "rb"],
+  "start_hint": "继续学习 Ruby",
+  "env_check": "ruby --version",
+  "install_hint": "请先安装 Ruby。当前原型使用 Ruby 标准库 Minitest，不需要额外 gem。",
+  "verify_template": "ruby -I\"$ROOT/workspace/test\" \"$ROOT/workspace/test\"/*_test.rb",
   "tasks": [
     {
       "id": "order-summary",

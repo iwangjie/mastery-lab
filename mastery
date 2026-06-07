@@ -7,16 +7,24 @@ require "open3"
 
 ROOT = File.expand_path(File.dirname(__FILE__))
 CATALOG = File.join(ROOT, ".mastery", "catalog")
+CONFIG_PATH = File.join(ROOT, ".mastery", "config.json")
 STATE_PATH = File.join(ROOT, ".mastery", "state.json")
 ROADMAP_PATH = File.join(ROOT, "roadmap.md")
 CURRENT_TASK = File.join(ROOT, "current_task")
 
 def usage
+  examples = catalog_configs
+    .map { |config| config["start_hint"] }
+    .compact
+    .first(2)
+    .map { |hint| "      ./mastery start \"#{hint}\"" }
+    .join("\n")
+
   puts <<~TEXT
     Mastery Lab
 
     Usage:
-      ./mastery start "继续学习 Ruby"
+#{examples}
       ./mastery check
       ./mastery next
   TEXT
@@ -41,12 +49,47 @@ def save_state(state)
   write_json(STATE_PATH, state)
 end
 
+def mastery_config
+  return {} unless File.exist?(CONFIG_PATH)
+
+  read_json(CONFIG_PATH)
+end
+
+def catalog_configs
+  Dir.glob(File.join(CATALOG, "*", "track.json"))
+    .sort
+    .map { |path| read_json(path) }
+end
+
+def default_track
+  configured = mastery_config["default_track"]
+  return configured if configured && File.exist?(File.join(CATALOG, configured, "track.json"))
+
+  catalog_configs.first&.fetch("id")
+end
+
+def track_aliases(config)
+  ([config["id"]] + Array(config["aliases"])).map { |alias_name| alias_name.to_s.downcase }
+end
+
 def infer_track(intent, state)
-  text = intent.join(" ").downcase
-  return "ruby" if text.include?("ruby")
+  text = intent.join(" ").downcase.strip
+  return state["track"] if text.empty? && state["track"]
+
+  matches = catalog_configs.select do |config|
+    track_aliases(config).any? { |alias_name| text.include?(alias_name) }
+  end
+
+  return matches.first["id"] if matches.length == 1
+
+  if matches.length > 1
+    names = matches.map { |config| "#{config["id"]}(#{config["title"]})" }.join(", ")
+    abort "你的学习意图匹配到多个路线：#{names}。请说得更具体一点。"
+  end
+
   return state["track"] if state["track"]
 
-  "ruby"
+  default_track || abort("本地还没有任何学习路线。请先在 .mastery/catalog/ 中添加 track。")
 end
 
 def track_config(track)
@@ -57,11 +100,13 @@ def track_config(track)
 end
 
 def task_config(track, task_id)
-  track_config(track)["tasks"].find { |task| task["id"] == task_id }
+  track_config(track)["tasks"].find { |task| task["id"] == task_id } ||
+    abort("No task #{task_id.inspect} in track #{track.inspect}.")
 end
 
 def first_task_id(track)
-  track_config(track)["tasks"].first["id"]
+  track_config(track)["tasks"].first&.fetch("id") ||
+    abort("Track #{track.inspect} has no tasks.")
 end
 
 def next_task_id(track, completed)
@@ -77,7 +122,26 @@ def ensure_task_state(state, task_id)
   }
 end
 
+def verify_command(config, task)
+  task["verify"] || config["verify_template"] ||
+    abort("Track #{config["id"].inspect} needs verify_template or task-level verify.")
+end
+
+def check_environment(config)
+  command = config["env_check"]
+  return if command.nil? || command.strip.empty?
+
+  stdout, stderr, status = Open3.capture3("bash", "-lc", command)
+  return if status.success?
+
+  hint = config["install_hint"] || "请先安装或配置 #{config["title"]} 所需的运行环境。"
+  details = [stdout, stderr].reject(&:empty?).join("\n")
+  abort "环境检查失败：#{command}\n#{details}\n#{hint}"
+end
+
 def copy_task(track, task_id)
+  config = track_config(track)
+  task = task_config(track, task_id)
   source = File.join(CATALOG, track, task_id)
   abort "Missing task #{track}/#{task_id}." unless Dir.exist?(source)
 
@@ -93,7 +157,9 @@ def copy_task(track, task_id)
     #!/usr/bin/env bash
     set -euo pipefail
     ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    ruby -I"$ROOT/workspace/test" "$ROOT/workspace/test"/*_test.rb
+    export ROOT
+    cd "$ROOT"
+    #{verify_command(config, task)}
   SH
   FileUtils.chmod("+x", verify_path)
 end
@@ -112,7 +178,7 @@ def current_task_ready?(track, task_id)
 end
 
 def write_roadmap(state)
-  track = state["track"] || "ruby"
+  track = state["track"] || default_track
   config = track_config(track)
   current = state["current_task"]
   completed = state["completed_tasks"] || []
@@ -132,8 +198,9 @@ def write_roadmap(state)
     lines << "- 重试次数：#{state.dig("tasks", current, "failures") || 0}"
     lines << "- 当前目标：打开 `current_task/GOAL.md`"
   else
+    start_hint = config["start_hint"] || "继续学习"
     lines << "- 当前任务：尚未开始"
-    lines << "- 下一步：运行 `./mastery start \"继续学习 Ruby\"`"
+    lines << "- 下一步：运行 `./mastery start \"#{start_hint}\"`"
   end
   lines << ""
   lines << "## 路线"
@@ -151,11 +218,11 @@ def write_roadmap(state)
     lines << "   - 训练重点：#{task["focus"]}"
     lines << "   - 掌握证据：#{task["evidence"]}"
   end
-  unless config["planned"].empty?
+  unless Array(config["planned"]).empty?
     lines << ""
     lines << "## 后续方向"
     lines << ""
-    config["planned"].each { |item| lines << "- #{item}" }
+    Array(config["planned"]).each { |item| lines << "- #{item}" }
   end
 
   failures = current ? (state.dig("tasks", current, "failures") || 0) : 0
@@ -178,10 +245,20 @@ def human_status(status)
   end
 end
 
+def reset_for_track!(state, track)
+  return if state["track"] == track
+
+  state["completed_tasks"] = []
+  state["tasks"] = {}
+  state["current_task"] = first_task_id(track)
+end
+
 def start(intent)
   state = load_state
   track = infer_track(intent, state)
   config = track_config(track)
+  check_environment(config)
+  reset_for_track!(state, track)
   state["track"] = track
   state["last_intent"] = intent.join(" ")
   state["completed_tasks"] ||= []
@@ -196,10 +273,17 @@ def start(intent)
   puts "打开 current_task/GOAL.md，然后在 current_task/workspace/ 中完成任务。"
 end
 
+def start_hint_for(state)
+  return track_config(default_track)["start_hint"] || "继续学习" unless state["track"]
+
+  track_config(state["track"])["start_hint"] || "继续学习"
+end
+
 def check
   state = load_state
-  abort "还没有学习状态。先运行：./mastery start \"继续学习 Ruby\"" unless state["current_task"]
-  abort "没有 current_task。先运行：./mastery start \"继续学习 Ruby\"" unless Dir.exist?(CURRENT_TASK)
+  hint = start_hint_for(state)
+  abort "还没有学习状态。先运行：./mastery start \"#{hint}\"" unless state["current_task"]
+  abort "没有 current_task。先运行：./mastery start \"#{hint}\"" unless Dir.exist?(CURRENT_TASK)
 
   task_id = state["current_task"]
   ensure_task_state(state, task_id)
@@ -232,7 +316,8 @@ end
 
 def next_task
   state = load_state
-  abort "还没有学习状态。先运行：./mastery start \"继续学习 Ruby\"" unless state["track"]
+  abort "还没有学习状态。先运行：./mastery start \"#{start_hint_for(state)}\"" unless state["track"]
+  config = track_config(state["track"])
 
   current = state["current_task"]
   if current && state.dig("tasks", current, "status") != "passed"
@@ -243,7 +328,7 @@ def next_task
   next_id = next_task_id(state["track"], completed)
   if next_id.nil?
     write_roadmap(state)
-    puts "本地 Ruby 原型任务已经完成。下一步应扩展 .mastery/catalog/ruby/，或接入云端题库。"
+    puts "本地 #{config["title"]} 任务已经完成。下一步应扩展 .mastery/catalog/#{state["track"]}/，或接入云端题库。"
     return
   end
 

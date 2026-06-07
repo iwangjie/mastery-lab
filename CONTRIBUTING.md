@@ -6,6 +6,7 @@ Mastery Lab 的贡献重点不是“多加资料”，而是增加能验证掌�
 
 ```bash
 ./mastery start "继续学习 Ruby"
+./mastery start "学点 shell"
 ./mastery check
 ./mastery next
 ```
@@ -33,6 +34,11 @@ Mastery Lab 的贡献重点不是“多加资料”，而是增加能验证掌�
 {
   "id": "ruby",
   "title": "Ruby 后端工程基础",
+  "aliases": ["ruby", "rails", "rb"],
+  "start_hint": "继续学习 Ruby",
+  "env_check": "ruby --version",
+  "install_hint": "请先安装 Ruby。",
+  "verify_template": "ruby -I\"$ROOT/workspace/test\" \"$ROOT/workspace/test\"/*_test.rb",
   "tasks": [
     {
       "id": "order-summary",
@@ -45,6 +51,21 @@ Mastery Lab 的贡献重点不是“多加资料”，而是增加能验证掌�
   "planned": ["异常处理与输入管道"]
 }
 ```
+
+最小字段：
+
+- `id`：路线唯一标识，必须和目录名一致。
+- `title`：路线图显示名称。
+- `aliases`：用户意图匹配关键词。
+- `start_hint`：帮助信息和路线图里的启动提示。
+- `verify_template`：默认验证命令。`mastery` 会生成 `current_task/verify.sh`，并提供 `$ROOT` 指向当前任务目录。
+- `tasks`：任务列表。
+
+可选字段：
+
+- `env_check`：启动前的环境检查命令。
+- `install_hint`：环境检查失败时显示的提示。
+- `tasks[].verify`：任务级验证命令，覆盖路线默认 `verify_template`。
 
 ## 新增一个任务
 
@@ -69,6 +90,7 @@ Mastery Lab 的贡献重点不是“多加资料”，而是增加能验证掌�
 ```bash
 node .mastery/tools/check-links.mjs
 ./.mastery/tools/smoke-ruby.sh
+./.mastery/tools/smoke-shell.sh
 ```
 
 如果新增了其他路线，请补对应的 smoke 脚本。

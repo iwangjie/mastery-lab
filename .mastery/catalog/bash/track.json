@@ -1,0 +1,23 @@
+{
+  "id": "bash",
+  "title": "Shell 自动化基础",
+  "aliases": ["bash", "shell", "sh", "命令行", "脚本"],
+  "start_hint": "学点 shell",
+  "env_check": "bash --version",
+  "install_hint": "请先安装 bash。macOS 和大多数 Linux 环境通常已经内置。",
+  "verify_template": "bash \"$ROOT/workspace/test\"/*_test.sh",
+  "tasks": [
+    {
+      "id": "quote-args",
+      "title": "安全处理命令参数",
+      "focus": "参数引用、空格、通配符、防止隐式拆分",
+      "level": "L1",
+      "evidence": "能写出不会拆散带空格参数的 shell 脚本。"
+    }
+  ],
+  "planned": [
+    "管道与退出码",
+    "文件批处理",
+    "错误处理与 set -euo pipefail"
+  ]
+}
