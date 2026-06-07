@@ -1,0 +1,28 @@
+# Generated mastery scenario workspaces
+problems/**/work/
+
+# Local editor and OS files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+tmp/
+temp/
+.cache/
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+
+# Dependency/build outputs that should not be committed if added later
+node_modules/
+vendor/bundle/
+coverage/
+dist/
+build/
