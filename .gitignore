@@ -1,4 +1,10 @@
-# Generated mastery scenario workspaces
+# Generated learning state and task workspaces
+current_task/
+.mastery/state.json
+.mastery/tmp/
+.mastery/logs/
+
+# Legacy generated scenario workspaces
 problems/**/work/
 
 # Local editor and OS files

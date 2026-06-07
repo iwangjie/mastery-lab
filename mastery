@@ -1,0 +1,272 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "fileutils"
+require "json"
+require "open3"
+
+ROOT = File.expand_path(File.dirname(__FILE__))
+CATALOG = File.join(ROOT, ".mastery", "catalog")
+STATE_PATH = File.join(ROOT, ".mastery", "state.json")
+ROADMAP_PATH = File.join(ROOT, "roadmap.md")
+CURRENT_TASK = File.join(ROOT, "current_task")
+
+def usage
+  puts <<~TEXT
+    Mastery Lab
+
+    Usage:
+      ./mastery start "继续学习 Ruby"
+      ./mastery check
+      ./mastery next
+  TEXT
+end
+
+def read_json(path)
+  JSON.parse(File.read(path))
+end
+
+def write_json(path, data)
+  FileUtils.mkdir_p(File.dirname(path))
+  File.write(path, JSON.pretty_generate(data) + "\n")
+end
+
+def load_state
+  return {} unless File.exist?(STATE_PATH)
+
+  read_json(STATE_PATH)
+end
+
+def save_state(state)
+  write_json(STATE_PATH, state)
+end
+
+def infer_track(intent, state)
+  text = intent.join(" ").downcase
+  return "ruby" if text.include?("ruby")
+  return state["track"] if state["track"]
+
+  "ruby"
+end
+
+def track_config(track)
+  path = File.join(CATALOG, track, "track.json")
+  abort "No local catalog for #{track.inspect} yet." unless File.exist?(path)
+
+  read_json(path)
+end
+
+def task_config(track, task_id)
+  track_config(track)["tasks"].find { |task| task["id"] == task_id }
+end
+
+def first_task_id(track)
+  track_config(track)["tasks"].first["id"]
+end
+
+def next_task_id(track, completed)
+  track_config(track)["tasks"].find { |task| !completed.include?(task["id"]) }&.fetch("id")
+end
+
+def ensure_task_state(state, task_id)
+  state["tasks"] ||= {}
+  state["tasks"][task_id] ||= {
+    "status" => "in_progress",
+    "attempts" => 0,
+    "failures" => 0
+  }
+end
+
+def copy_task(track, task_id)
+  source = File.join(CATALOG, track, task_id)
+  abort "Missing task #{track}/#{task_id}." unless Dir.exist?(source)
+
+  FileUtils.rm_rf(CURRENT_TASK)
+  FileUtils.mkdir_p(CURRENT_TASK)
+  FileUtils.cp(File.join(source, "GOAL.md"), File.join(CURRENT_TASK, "GOAL.md"))
+  FileUtils.cp(File.join(source, "README.md"), File.join(CURRENT_TASK, "README.md"))
+  FileUtils.cp_r(File.join(source, "workspace"), File.join(CURRENT_TASK, "workspace"))
+  File.write(File.join(CURRENT_TASK, ".mastery-task"), "#{track}/#{task_id}\n")
+
+  verify_path = File.join(CURRENT_TASK, "verify.sh")
+  File.write(verify_path, <<~SH)
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    ruby -I"$ROOT/workspace/test" "$ROOT/workspace/test"/*_test.rb
+  SH
+  FileUtils.chmod("+x", verify_path)
+end
+
+def current_task_ready?(track, task_id)
+  marker = File.join(CURRENT_TASK, ".mastery-task")
+  expected = "#{track}/#{task_id}"
+
+  Dir.exist?(CURRENT_TASK) &&
+    File.exist?(File.join(CURRENT_TASK, "README.md")) &&
+    File.exist?(File.join(CURRENT_TASK, "GOAL.md")) &&
+    File.exist?(File.join(CURRENT_TASK, "verify.sh")) &&
+    Dir.exist?(File.join(CURRENT_TASK, "workspace")) &&
+    File.exist?(marker) &&
+    File.read(marker).strip == expected
+end
+
+def write_roadmap(state)
+  track = state["track"] || "ruby"
+  config = track_config(track)
+  current = state["current_task"]
+  completed = state["completed_tasks"] || []
+  current_status = current ? state.dig("tasks", current, "status") : "not_started"
+  current_meta = current && task_config(track, current)
+
+  lines = []
+  lines << "# #{config["title"]}路线图"
+  lines << ""
+  lines << "这份路线图由 `mastery` 更新。它会根据验证结果调整后续任务，而不是让你自己在资料里找方向。"
+  lines << ""
+  lines << "## 当前状态"
+  lines << ""
+  if current_meta
+    lines << "- 当前任务：#{current_meta["title"]}"
+    lines << "- 状态：#{human_status(current_status)}"
+    lines << "- 重试次数：#{state.dig("tasks", current, "failures") || 0}"
+    lines << "- 当前目标：打开 `current_task/GOAL.md`"
+  else
+    lines << "- 当前任务：尚未开始"
+    lines << "- 下一步：运行 `./mastery start \"继续学习 Ruby\"`"
+  end
+  lines << ""
+  lines << "## 路线"
+  lines << ""
+  config["tasks"].each_with_index do |task, index|
+    marker =
+      if completed.include?(task["id"])
+        "[x]"
+      elsif task["id"] == current
+        "[>]"
+      else
+        "[ ]"
+      end
+    lines << "#{index + 1}. #{marker} #{task["title"]}"
+    lines << "   - 训练重点：#{task["focus"]}"
+    lines << "   - 掌握证据：#{task["evidence"]}"
+  end
+  unless config["planned"].empty?
+    lines << ""
+    lines << "## 后续方向"
+    lines << ""
+    config["planned"].each { |item| lines << "- #{item}" }
+  end
+
+  failures = current ? (state.dig("tasks", current, "failures") || 0) : 0
+  if current && failures >= 3
+    lines << ""
+    lines << "## 自动修正"
+    lines << ""
+    lines << "当前任务已经连续失败 #{failures} 次。系统会优先安排更小的加固任务，而不是继续推进新概念。"
+  end
+
+  File.write(ROADMAP_PATH, lines.join("\n") + "\n")
+end
+
+def human_status(status)
+  case status
+  when "passed" then "已通过"
+  when "failed" then "需要继续修复"
+  when "in_progress" then "进行中"
+  else "未开始"
+  end
+end
+
+def start(intent)
+  state = load_state
+  track = infer_track(intent, state)
+  config = track_config(track)
+  state["track"] = track
+  state["last_intent"] = intent.join(" ")
+  state["completed_tasks"] ||= []
+  state["current_task"] ||= first_task_id(track)
+  ensure_task_state(state, state["current_task"])
+
+  copy_task(track, state["current_task"]) unless current_task_ready?(track, state["current_task"])
+  save_state(state)
+  write_roadmap(state)
+
+  puts "已准备：#{config["title"]} / #{task_config(track, state["current_task"])["title"]}"
+  puts "打开 current_task/GOAL.md，然后在 current_task/workspace/ 中完成任务。"
+end
+
+def check
+  state = load_state
+  abort "还没有学习状态。先运行：./mastery start \"继续学习 Ruby\"" unless state["current_task"]
+  abort "没有 current_task。先运行：./mastery start \"继续学习 Ruby\"" unless Dir.exist?(CURRENT_TASK)
+
+  task_id = state["current_task"]
+  ensure_task_state(state, task_id)
+  state["tasks"][task_id]["attempts"] += 1
+
+  stdout, stderr, status = Open3.capture3(File.join(CURRENT_TASK, "verify.sh"))
+  puts stdout unless stdout.empty?
+  warn stderr unless stderr.empty?
+
+  if status.success?
+    state["tasks"][task_id]["status"] = "passed"
+    state["completed_tasks"] ||= []
+    state["completed_tasks"] << task_id unless state["completed_tasks"].include?(task_id)
+    state["last_result"] = "passed"
+    puts "验证通过。现在用自己的话解释这次任务考察的机制，然后运行：./mastery next"
+  else
+    state["tasks"][task_id]["status"] = "failed"
+    state["tasks"][task_id]["failures"] += 1
+    state["last_result"] = "failed"
+    puts "验证未通过。先看失败的测试名和报错行，再回到 current_task/workspace/ 修复。"
+    if state["tasks"][task_id]["failures"] >= 3
+      puts "Mastery Coach: 你已经在当前任务上多次卡住。我已在 roadmap.md 标记阻塞点；下一步会优先安排更小的加固任务。"
+    end
+  end
+
+  save_state(state)
+  write_roadmap(state)
+  exit(status.success? ? 0 : 1)
+end
+
+def next_task
+  state = load_state
+  abort "还没有学习状态。先运行：./mastery start \"继续学习 Ruby\"" unless state["track"]
+
+  current = state["current_task"]
+  if current && state.dig("tasks", current, "status") != "passed"
+    abort "当前任务还没有通过。先运行 ./mastery check，并修到通过后再进入下一关。"
+  end
+
+  completed = state["completed_tasks"] || []
+  next_id = next_task_id(state["track"], completed)
+  if next_id.nil?
+    write_roadmap(state)
+    puts "本地 Ruby 原型任务已经完成。下一步应扩展 .mastery/catalog/ruby/，或接入云端题库。"
+    return
+  end
+
+  state["current_task"] = next_id
+  ensure_task_state(state, next_id)
+  state["tasks"][next_id]["status"] = "in_progress"
+  copy_task(state["track"], next_id)
+  save_state(state)
+  write_roadmap(state)
+
+  puts "已进入下一关：#{task_config(state["track"], next_id)["title"]}"
+  puts "打开 current_task/GOAL.md 继续。"
+end
+
+command = ARGV.shift
+case command
+when "start"
+  start(ARGV)
+when "check"
+  check
+when "next"
+  next_task
+else
+  usage
+  exit(command.nil? ? 0 : 1)
+end

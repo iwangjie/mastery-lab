@@ -1,0 +1,26 @@
+{
+  "id": "ruby",
+  "title": "Ruby 后端工程基础",
+  "tasks": [
+    {
+      "id": "order-summary",
+      "title": "订单汇总",
+      "focus": "Enumerable、Hash 键类型、nil 边界、输入不可变性",
+      "level": "L1",
+      "evidence": "能在真实订单数据中完成汇总，并通过边界测试。"
+    },
+    {
+      "id": "mini-select",
+      "title": "自己实现 select",
+      "focus": "block、yield、方法返回值",
+      "level": "L2",
+      "evidence": "能不用内置 select/filter/find_all，实现一个可接收 block 的筛选方法。"
+    }
+  ],
+  "planned": [
+    "异常处理与输入管道",
+    "对象模型与方法查找",
+    "模块、mixin 与组合",
+    "Ruby 小型服务的测试与重构"
+  ]
+}
